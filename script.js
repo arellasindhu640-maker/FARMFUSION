@@ -1,4 +1,3 @@
-
 /* Farm Fusion – prototype logic. All market/transport data is sample data; state is kept in LocalStorage. */
 const $=s=>document.querySelector(s), money=n=>'₹'+Math.round(n).toLocaleString('en-IN');
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -18,14 +17,20 @@ const VEH=[{n:'Mini Tractor',i:'🚜',cap:500,base:700,who:'Suresh Reddy',eta:'2
 const STEPS=['Request Confirmed','Driver Assigned','Vehicle On The Way','Pickup Completed','Arrived At Mandi'];
 const NT={2:'Driver is on the way.',3:'Pickup completed.',4:'Vehicle is arriving at the mandi.',5:'Your produce arrived at the mandi.'};
 const NAV=[['home','🏠','Home'],['products','🌾','My Products'],['prices','📊','Market Prices'],['mandis','📍','Nearby Mandis'],['compare','🔄','Compare Prices'],['transport','🚚','Transportation'],['sales','📦','My Sales'],['support','👨‍🌾','Farmer Support']];
+const NAV_T=[['thome','🏠','Home'],['vehicle','🚛','My Vehicle'],['requests','📥','Pickup Requests'],['deliveries','📦','My Deliveries'],['support','👨‍🌾','Help & Support']];
 const LOC=['Hyderabad','Secunderabad','Medchal','Shamshabad'];
+const REQ_SEED=[
+ {id:'PR-501',farmer:'Padma Reddy',crop:'Tomato',qty:18,unit:'quintal',pickup:'Ghatkesar village',mandi:'Rythu Bazar',km:11,status:'pending'},
+ {id:'PR-502',farmer:'Suresh Goud',crop:'Cotton',qty:25,unit:'quintal',pickup:'Bhongir village',mandi:'Wholesale Market',km:9,status:'pending'},
+ {id:'PR-503',farmer:'Lakshmi Naik',crop:'Rice',qty:40,unit:'quintal',pickup:'Medchal village',mandi:'Nearby Mandi',km:4,status:'pending'}];
 
 /* ---------- State ---------- */
 let S=JSON.parse(localStorage.getItem('ff')||'null')||{user:null,acct:null,loc:'Hyderabad',cnt:0,cur:null,tr:null,sales:[],
  prod:[{crop:'Tomato',cat:'Vegetables',qty:250,unit:'kg',harvest:today(),loc:'Hyderabad',sell:today()}],
- n:[{t:'Market price for Tomato updated.'},{t:'Wholesale Market price increased to ₹31/kg.'}]};
+ n:[{t:'Market price for Tomato updated.'},{t:'Wholesale Market price increased to ₹31/kg.'}],
+ vehicle:null,reqs:JSON.parse(JSON.stringify(REQ_SEED)),deliv:[]};
 const save=()=>localStorage.setItem('ff',JSON.stringify(S));
-let page='home',auth='login',det=null,PC='Tomato',F={sort:'price',st:'all'};
+let page='home',auth='login',det=null,PC='Tomato',F={sort:'price',st:'all'},selRole='sell',authStep='splash';
 const note=t=>{S.n.unshift({t})};
 function toast(m){const t=$('#toast');t.textContent=m;t.className='show';setTimeout(()=>t.className='',2200)}
 
@@ -101,27 +106,69 @@ support(){const it=[['🌱 Crop Guidance','Tomato needs steady watering and stak
  return `<h2>Farmer Support</h2>${it.map(x=>`<details><summary>${x[0]}</summary><p class=mu>${x[1]}</p></details>`).join('')}`},
 notifs(){return `<h2>Notifications</h2>${S.n.map(n=>`<div class=card>🔔 ${esc(n.t)}</div>`).join('')}`}};
 
+/* ---------- Transport-provider views ---------- */
+const fare=r=>Math.round(r.km*45/10)*10;
+const T={
+thome(){const pend=S.reqs.filter(r=>r.status=='pending').length,active=S.deliv.filter(d=>d.step<4).length,done=S.deliv.filter(d=>d.step>=4).length;
+ const card=(g,i,t,s)=>`<button class=card data-go=${g}><span>${i}</span><h3>${t}</h3><p class=mu>${s}</p></button>`;
+ return `<section class=hero><div><h1>${greet()}, ${esc(S.user.name)}!</h1><p>Farmers near ${esc(S.loc)} are looking for help moving their produce to market. Register your vehicle and start accepting pickups.</p>${S.vehicle?'':'<button class="btn gold" data-go=vehicle>Register your vehicle</button>'}</div></section>
+ <div class=stats><div><small>Your vehicle</small><b>${S.vehicle?S.vehicle.type:'Not registered'}</b></div><div><small>Pickup requests</small><b>${pend} pending</b></div><div><small>Active deliveries</small><b>${active}</b></div><div><small>Completed</small><b>${done}</b></div></div>
+ <div class=grid>${card('vehicle','🚛','My Vehicle',S.vehicle?'Edit your listing':'Register to get requests')+card('requests','📥','Pickup Requests',pend+' farmers nearby need transport')+card('deliveries','📦','My Deliveries',active+' in progress')+card('support','👨‍🌾','Help & Support','Tips and contact info')}</div>`},
+vehicle(){const v=S.vehicle||{};
+ return `<h2>My Vehicle</h2><form id=vform class=card><div class=cols>
+ <div><label>Vehicle type</label><select name=type>${VEH.map(x=>`<option ${v.type==x.n?'selected':''}>${x.n}</option>`).join('')}</select></div>
+ <div><label>Base location</label><select name=loc>${LOC.map(l=>`<option ${(v.loc||S.loc)==l?'selected':''}>${l}</option>`).join('')}</select></div></div>
+ <label><input type=checkbox name=avail ${v.avail!==false?'checked':''} style="width:auto;min-height:auto;margin-right:8px">Available for pickups right now</label>
+ <div class=row><button class="btn gold wide">Save vehicle</button></div></form>
+ ${S.vehicle?`<p class=note>Farmers searching near ${esc(S.vehicle.loc)} can now see your ${esc(S.vehicle.type)} ${S.vehicle.avail!==false?'as available':'(currently hidden — turn availability on to be seen)'}.</p>`:''}`},
+requests(){const pend=S.reqs.filter(r=>r.status=='pending');
+ return `<h2>Pickup Requests</h2>${!S.vehicle?'<p class=note>Register your vehicle first so farmers can find you.</p>':''}
+ ${pend.map(r=>`<div class=card><h3>${IC[r.crop]||'🌾'} ${r.crop} · ${r.qty} ${r.unit}</h3><p class=mu>Farmer: ${esc(r.farmer)}</p><ul><li>📍 Pickup: ${esc(r.pickup)}</li><li>🏪 Drop at: ${r.mandi}</li><li>${r.km} km away</li><li>💰 Suggested fare: ${money(fare(r))}</li></ul>
+ <div class=row><button class="btn line" data-act=decline data-id=${r.id}>Decline</button><button class="btn gold" data-act=accept data-id=${r.id} ${S.vehicle?'':'disabled'}>Accept</button></div></div>`).join('')||'<div class=card><p class=mu>No pending requests right now — check back soon.</p></div>'}`},
+deliveries(){return `<h2>My Deliveries</h2>${S.deliv.map((d,i)=>`<div class=card><h3>${IC[d.crop]||'🌾'} ${d.crop} · ${d.qty} ${d.unit} · ${esc(d.farmer)}</h3>
+ <p class=mu>${esc(d.pickup)} → ${d.mandi} · ${d.km} km · Fare ${money(fare(d))}</p>
+ <p>Status: <span class=pill>${d.step>=4?'Delivered':STEPS[d.step]}</span></p>
+ ${d.step<4?`<button class=btn data-act=advance data-i=${i}>Simulate next step</button>`:'<p class=note>Delivery completed.</p>'}</div>`).join('')||'<div class=card><p class=mu>Accept a pickup request to start a delivery.</p><button class=btn data-go=requests>View Requests</button></div>'}`}};
+T.support=V.support;
+
 function modal(){const m=det&&rows().find(r=>r.id==det);if(!m)return'';
  return `<div class=modal data-act=close><div class=sheet><h2>🏪 ${m.name}</h2><p>${m.area}, Hyderabad region</p><ul><li>📍 ${m.km} km · ${m.min} min</li><li>Price: <b>${money(m.price)}/kg</b></li><li>🕒 Open ${m.hrs}</li><li>☎️ ${m.ph}</li><li>Buyers: ${m.buy}</li></ul>
  <p>Estimated selling value: <b>${money(m.value)}</b><br><small class=mu>Estimate based on the displayed price, not guaranteed.</small></p>
  <div class=row><button class="btn line" data-act=sel data-id=${m.id}>Select This Mandi</button><button class="btn gold" data-act=arrange data-id=${m.id}>Arrange Transport</button></div><button class=link data-act=close>Close</button></div></div>`}
 
-function authView(){const reg=auth=='register';
- return `<div class=auth><aside><img src="assets/logo.png" alt="Farm Fusion logo"><h1>Farm Fusion</h1><h2>Connect. Compare. Sell. Transport.</h2><p>Better Markets. Better Prices. Better Farming.</p><p>Farm Fusion brings market discovery, price comparison and transportation assistance together in one simple platform for farmers.</p></aside>
- <section>${reg?`<h2>Create your account</h2><form id=reg><label>Farmer name</label><input name=name required><label>Mobile number</label><input name=mobile type=tel required><div class=cols><div><label>Village</label><input name=village required></div><div><label>District</label><input name=district required></div><div><label>State</label><input name=state value=Telangana required></div><div><label>Preferred language</label><select name=lang><option>English</option><option>Telugu</option><option>Hindi</option></select></div></div><label>Password</label><input name=password type=password required><div class=row><button class="btn gold wide">Create Account</button></div></form><button class=link data-act=auth data-m=login>I already have an account</button>`
- :`<h2>Welcome to Farm Fusion</h2><p class=mu>Sell smarter. Reach better markets.</p><form id=login><label>Mobile number or email</label><input name=user value="9876543210"><label>Password</label><input name=pw type=password value="demo123"><div class=row><button class="btn wide">Login</button></div></form><button class=link data-act=auth data-m=register>Create Account</button> <button class=link data-act=forgot>Forgot Password</button><p class=note>Demo: just press Login to enter.</p>`}</section></div>`}
+function splashView(){
+ return `<div class=splash><div class="logo-mark xl">🌾</div><h1>Farm Fusion</h1><p class=mu>Connect. Compare. Sell. Transport.</p>
+ <button class=arrow-btn data-act=begin aria-label="Continue to login">&#8594;</button></div>`}
+
+function authView(){
+ return `<div class=auth><aside><div class="logo-mark lg">🌾</div><h1>Farm Fusion</h1><h2>Connect. Compare. Sell. Transport.</h2><p>Better Markets. Better Prices. Better Farming.</p><p>Farm Fusion brings market discovery, price comparison and transportation assistance together in one simple platform for farmers and transport helpers.</p></aside>
+ <section><h2>Welcome to Farm Fusion</h2><p class=mu>Tell us who you are to get started.</p>
+ <form id=onboard>
+ <label>Your name</label><input name=name placeholder="e.g. Ravi Kumar" required>
+ <label>Mobile number</label><input name=mobile type=tel placeholder="10-digit number" maxlength=10 required>
+ <label>Location</label><select name=location>${LOC.map(l=>`<option>${l}</option>`).join('')}</select>
+ <label>I want to</label>
+ <div class=cols style="margin-top:6px">
+  <button type=button class="card veh ${selRole=='sell'?'on':''}" data-act=role data-r=sell><span>🌾</span><div><b>Sell my produce</b><br><small class=mu>Compare mandi prices & get transport</small></div></button>
+  <button type=button class="card veh ${selRole=='transport'?'on':''}" data-act=role data-r=transport><span>🚛</span><div><b>Provide transport service</b><br><small class=mu>List your vehicle & accept pickups</small></div></button>
+ </div>
+ <div class=row><button class="btn gold wide">Get Started</button></div></form>
+ <p class=note>Demo: any mobile number works, no password needed.</p></section></div>`}
 
 /* ---------- Render ---------- */
 function render(){const app=$('#app');
- if(!S.user){app.innerHTML=authView();return}
- app.innerHTML=`<header class=top><img src="assets/logo.png" alt=""><b>Farm Fusion</b><button data-go=notifs aria-label="Notifications">🔔 ${S.n.length}</button><button data-act=logout>Logout</button></header>
- <nav>${NAV.map(n=>`<button class="${page==n[0]?'on':''}" data-go=${n[0]}><span>${n[1]}</span>${n[2]}</button>`).join('')}</nav><main>${V[page]()}</main>${modal()}`}
+ if(!S.user){app.innerHTML=authStep=='splash'?splashView():authView();return}
+ const isT=S.user.role=='transport',nav=isT?NAV_T:NAV,views=isT?T:V;
+ if(!views[page])page=isT?'thome':'home';
+ app.innerHTML=`<header class=top><div class="logo-mark sm">🌾</div><b>Farm Fusion</b><button data-go=notifs aria-label="Notifications">🔔 ${S.n.length}</button><button data-act=logout>Logout</button></header>
+ <nav>${nav.map(n=>`<button class="${page==n[0]?'on':''}" data-go=${n[0]}><span>${n[1]}</span>${n[2]}</button>`).join('')}</nav><main>${views[page]()}</main>${modal()}`}
 function go(p){page=p;det=null;render();scrollTo(0,0)}
 
 /* ---------- Actions ---------- */
 function pick(id){S.cur.mandi=id;const m=chosen();note(m.name+' selected for '+S.cur.crop+'.');save();toast(m.name+' selected')}
 const ACT={
- auth(d){auth=d.m;render()},forgot(){toast('Demo mode: use any password')},
+ role(d){selRole=d.r;render()},
+ begin(){authStep='onboard';render()},
  logout(){S.user=null;auth='login';save();render()},
  pc(d){PC=d.k;render()},
  sellcrop(d){S.cur={crop:d.k,qty:250,unit:'kg',loc:S.loc,mandi:null,veh:null};save();go('products')},
@@ -130,17 +177,21 @@ const ACT={
  sel(d){pick(d.id);render()},arrange(d){pick(d.id);go('transport')},
  veh(d){S.cur.veh=+d.i;save();render()},
  next(){if(S.tr&&S.tr.step<5)tick()},
- sold(d){const s=S.sales[d.i];s.sold=true;note(s.crop+' sale at '+s.mandi+' marked as sold.');save();render()}};
+ sold(d){const s=S.sales[d.i];s.sold=true;note(s.crop+' sale at '+s.mandi+' marked as sold.');save();render()},
+ accept(d){const r=S.reqs.find(x=>x.id==d.id);r.status='accepted';S.deliv.unshift({...r,step:0});note('Accepted pickup for '+esc(r.farmer)+'.');save();go('deliveries')},
+ decline(d){const r=S.reqs.find(x=>x.id==d.id);r.status='declined';save();render()},
+ advance(d){const dl=S.deliv[d.i];dl.step=Math.min(4,dl.step+1);note(dl.step>=4?'Delivery completed for '+esc(dl.farmer)+'.':'Delivery update: '+esc(dl.farmer)+' — '+STEPS[dl.step]+'.');save();render()}};
 document.addEventListener('click',e=>{const t=e.target.closest('[data-go],[data-act]');if(!t)return;
  if(t.dataset.go)return go(t.dataset.go);ACT[t.dataset.act]?.(t.dataset,e,t)});
 document.addEventListener('change',e=>{const t=e.target;
  if(t.dataset.f){F[t.dataset.f]=t.value;render()}
  if(t.dataset.loc!==undefined){S.loc=t.value;save();toast('Location set to '+t.value)}});
 const FORMS={
- login(){S.user=S.acct||{name:'Ravi Kumar',village:'Shamirpet',district:'Medchal',state:'Telangana'};save();page='home';render()},
- reg(v){S.acct=S.user=v;S.loc=LOC.includes(v.district)?v.district:S.loc;save();page='home';render()},
+ onboard(v){S.user={name:v.name,mobile:v.mobile,village:v.location,role:selRole};S.loc=v.location;
+  page=selRole=='transport'?'thome':'home';save();render()},
  addp(v){const p={crop:v.crop,cat:v.cat,qty:+v.qty,unit:v.unit,harvest:v.harvest,loc:v.loc,sell:v.sell};S.prod.unshift(p);S.loc=v.loc;
   S.cur={crop:p.crop,qty:p.qty,unit:p.unit,loc:p.loc,mandi:null,veh:null};note(p.crop+' added: '+p.qty+' '+p.unit+'.');save();go('mandis')},
+ vform(v){S.vehicle={type:v.type,loc:v.loc,avail:v.avail=='on'};note('Vehicle listing saved: '+v.type+' at '+v.loc+'.');save();toast('Vehicle listing saved');render()},
  book(v){const c=S.cur,m=chosen(),ve=VEH[c.veh];S.cnt++;const id='FF-TR-'+(1024+S.cnt);
   S.tr={id,step:1,crop:c.crop,qty:c.qty,unit:c.unit,mandi:m.name,veh:ve.n,who:ve.who,cost:vcost(ve,m),date:v.date,time:v.time,pickup:v.pickup};
   S.sales.unshift({tid:id,crop:c.crop,qty:c.qty,unit:c.unit,mandi:m.name,price:m.price,value:m.value,cost:S.tr.cost,sold:false});
